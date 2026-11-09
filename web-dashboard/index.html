@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Home Real-Time Dashboard</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
+    body { background-color: #0b1120; color: #f1f5f9; min-height: 100vh; padding: 2rem 1rem; }
+    .container { max-width: 900px; margin: 0 auto; }
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; border-bottom: 1px solid #1e293b; padding-bottom: 1rem; }
+    .status-badge { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; padding: 6px 14px; border-radius: 9999px; background: rgba(16, 185, 129, 0.1); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.2); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #34d399; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.25rem; margin-bottom: 2rem; }
+    .card { background: #0f172a; border: 1px solid #1e293b; border-radius: 1rem; padding: 1.5rem; transition: all 0.2s; }
+    .card:hover { border-color: #334155; }
+    .card-title { font-size: 0.85rem; color: #94a3b8; font-weight: 500; margin-bottom: 0.5rem; }
+    .card-value { font-size: 2.25rem; font-weight: 700; color: #ffffff; }
+    .unit { font-size: 1.1rem; color: #64748b; font-weight: 500; }
+    .device-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+    .btn-toggle { width: 100%; padding: 0.75rem 1rem; border-radius: 0.5rem; border: none; font-weight: 600; cursor: pointer; transition: 0.2s; font-size: 0.9rem; }
+    .btn-on { background: #10b981; color: #ffffff; }
+    .btn-on:hover { background: #059669; }
+    .btn-off { background: #334155; color: #cbd5e1; }
+    .btn-off:hover { background: #475569; }
+    .footer { text-align: center; color: #64748b; font-size: 0.8rem; margin-top: 3rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1 style="font-size: 1.5rem; font-weight: 700;">🏠 Smart Home Gateway</h1>
+        <p style="color: #94a3b8; font-size: 0.85rem;">Kontrol Perangkat & Telemetri ESP32 via MQTT</p>
+      </div>
+      <div id="connectionStatus" class="status-badge">
+        <span class="dot"></span>
+        <span id="statusText">MQTT: Menghubungkan...</span>
+      </div>
+    </header>
+
+    <!-- Telemetri Sensor -->
+    <div class="grid">
+      <div class="card">
+        <div class="card-title">SUHU RUANGAN</div>
+        <div class="card-value"><span id="tempVal">--</span> <span class="unit">°C</span></div>
+      </div>
+      <div class="card">
+        <div class="card-title">KELEMBAPAN UDARA</div>
+        <div class="card-value"><span id="humVal">--</span> <span class="unit">%</span></div>
+      </div>
+      <div class="card">
+        <div class="card-title">MODE OTOMASI KIPAS</div>
+        <div class="card-value" style="font-size: 1.3rem; margin-top: 0.5rem;" id="autoModeVal">AUTO (≥ 29°C)</div>
+      </div>
+    </div>
+
+    <!-- Kontrol Perangkat -->
+    <h2 style="font-size: 1.1rem; margin-bottom: 1rem; color: #e2e8f0;">Kontrol Relay & Beban</h2>
+    <div class="grid">
+      <div class="card">
+        <div class="device-header">
+          <span style="font-weight: 600;">💡 Lampu Utama</span>
+          <span id="lightBadge" style="font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; background: #334155;">MATI</span>
+        </div>
+        <button id="btnLight" onclick="toggleDevice('light')" class="btn-toggle btn-off">Nyalakan Lampu</button>
+      </div>
+
+      <div class="card">
+        <div class="device-header">
+          <span style="font-weight: 600;">❄️ Kipas / AC Pendingin</span>
+          <span id="fanBadge" style="font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; background: #334155;">MATI</span>
+        </div>
+        <button id="btnFan" onclick="toggleDevice('fan')" class="btn-toggle btn-off">Nyalakan Kipas</button>
+      </div>
+
+      <div class="card">
+        <div class="device-header">
+          <span style="font-weight: 600;">⚙️ Otomasi Kipas Cerdas</span>
+          <span id="autoBadge" style="font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; background: #10b981;">AKTIF</span>
+        </div>
+        <button id="btnAuto" onclick="toggleDevice('auto')" class="btn-toggle btn-on">Matikan Mode Auto</button>
+      </div>
+    </div>
+
+    <div class="footer">
+      Sistem Otomasi Rumah Terintegrasi &bull; ESP32 & MQTT Real-Time Web
+    </div>
+  </div>
+
+  <script>
+    let lightStatus = 'OFF';
+    let fanStatus = 'OFF';
+    let autoStatus = 'ON';
+
+    // Koneksi MQTT Client langsung via WebSocket (WSS) ke broker EMQX
+    const client = mqtt.connect('wss://broker.emqx.io:8084/mqtt', {
+      clientId: 'WebClient_' + Math.random().toString(16).substring(2, 8)
+    });
+
+    client.on('connect', () => {
+      document.getElementById('statusText').innerText = 'MQTT: Terhubung';
+      document.getElementById('connectionStatus').style.background = 'rgba(16, 185, 129, 0.1)';
+      document.getElementById('connectionStatus').style.color = '#34d399';
+      client.subscribe('smarthome/state/#');
+    });
+
+    client.on('offline', () => {
+      document.getElementById('statusText').innerText = 'MQTT: Terputus';
+      document.getElementById('connectionStatus').style.background = 'rgba(239, 68, 68, 0.1)';
+      document.getElementById('connectionStatus').style.color = '#f87171';
+    });
+
+    client.on('message', (topic, message) => {
+      try {
+        const payload = JSON.parse(message.toString());
+        if (topic === 'smarthome/state/telemetry') {
+          if (payload.temperature !== undefined) document.getElementById('tempVal').innerText = payload.temperature;
+          if (payload.humidity !== undefined) document.getElementById('humVal').innerText = payload.humidity;
+          if (payload.autoFan !== undefined) {
+            document.getElementById('autoModeVal').innerText = payload.autoFan ? 'AUTO (≥ 29°C)' : 'MANUAL';
+          }
+        } else if (topic === 'smarthome/state/devices') {
+          updateUI(payload);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    });
+
+    function updateUI(data) {
+      if (data.light) {
+        lightStatus = data.light;
+        const btn = document.getElementById('btnLight');
+        const badge = document.getElementById('lightBadge');
+        if (lightStatus === 'ON') {
+          btn.className = 'btn-toggle btn-on';
+          btn.innerText = 'Matikan Lampu';
+          badge.innerText = 'HIDUP';
+          badge.style.background = '#10b981';
+        } else {
+          btn.className = 'btn-toggle btn-off';
+          btn.innerText = 'Nyalakan Lampu';
+          badge.innerText = 'MATI';
+          badge.style.background = '#334155';
+        }
+      }
+
+      if (data.fan) {
+        fanStatus = data.fan;
+        const btn = document.getElementById('btnFan');
+        const badge = document.getElementById('fanBadge');
+        if (fanStatus === 'ON') {
+          btn.className = 'btn-toggle btn-on';
+          btn.innerText = 'Matikan Kipas';
+          badge.innerText = 'HIDUP';
+          badge.style.background = '#10b981';
+        } else {
+          btn.className = 'btn-toggle btn-off';
+          btn.innerText = 'Nyalakan Kipas';
+          badge.innerText = 'MATI';
+          badge.style.background = '#334155';
+        }
+      }
+
+      if (data.auto) {
+        autoStatus = data.auto;
+        const btn = document.getElementById('btnAuto');
+        const badge = document.getElementById('autoBadge');
+        if (autoStatus === 'ON') {
+          btn.className = 'btn-toggle btn-on';
+          btn.innerText = 'Matikan Mode Auto';
+          badge.innerText = 'AKTIF';
+          badge.style.background = '#10b981';
+        } else {
+          btn.className = 'btn-toggle btn-off';
+          btn.innerText = 'Aktifkan Mode Auto';
+          badge.innerText = 'NONAKTIF';
+          badge.style.background = '#334155';
+        }
+      }
+    }
+
+    function toggleDevice(device) {
+      if (device === 'light') {
+        const nextState = lightStatus === 'ON' ? 'OFF' : 'ON';
+        client.publish('smarthome/control/light', nextState);
+      } else if (device === 'fan') {
+        const nextState = fanStatus === 'ON' ? 'OFF' : 'ON';
+        client.publish('smarthome/control/fan', nextState);
+      } else if (device === 'auto') {
+        const nextState = autoStatus === 'ON' ? 'OFF' : 'ON';
+        client.publish('smarthome/control/auto', nextState);
+      }
+    }
+  </script>
+</body>
+</html>
